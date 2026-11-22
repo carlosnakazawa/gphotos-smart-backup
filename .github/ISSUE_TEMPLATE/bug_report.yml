@@ -1,0 +1,55 @@
+name: Bug report
+description: Something did not work as expected. You can write in any language.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! You can write in **any language**.
+        **Never paste your `rclone.conf` or `.sync_history.json`**: they contain your Google token and your file names.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command used
+      placeholder: .\gphotos-backup.ps1 -SourcePath 'D:\Camera' -AlbumPerFolder
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows and PowerShell versions
+      description: "`winver` and `$PSVersionTable.PSVersion`"
+      placeholder: Windows 11 Pro 25H2, PowerShell 5.1.26100.1
+    validations:
+      required: true
+  - type: input
+    id: tools
+    attributes:
+      label: rclone and ffmpeg versions
+      description: First line of `rclone version` and `ffmpeg -version`
+      placeholder: rclone v1.75.2, ffmpeg 8.0
+  - type: dropdown
+    id: media
+    attributes:
+      label: Kind of file involved
+      multiple: true
+      options:
+        - Photo (JPEG/PNG)
+        - Photo (HEIC/HEIF)
+        - Video from iPhone
+        - Video from Android
+        - Video from a camera/drone/action cam
+        - Not related to a specific file
+  - type: textarea
+    id: output
+    attributes:
+      label: Console output
+      description: The lines around the error. Replace personal file names if you prefer.
+      render: text

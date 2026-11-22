@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest an idea. You can write in any language.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! You can write in **any language**.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would it solve?
+      description: Describe your situation (camera/phone, library size, how you run the script).
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How do you imagine it working?
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to help implement or test it.

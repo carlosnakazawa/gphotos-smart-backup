@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(rclone sync *)",
+      "PowerShell(rclone sync *)",
+      "Bash(rclone move *)",
+      "PowerShell(rclone move *)",
+      "Bash(rclone moveto *)",
+      "PowerShell(rclone moveto *)",
+      "Bash(rclone delete *)",
+      "PowerShell(rclone delete *)",
+      "Bash(rclone deletefile *)",
+      "PowerShell(rclone deletefile *)",
+      "Bash(rclone purge *)",
+      "PowerShell(rclone purge *)",
+      "Bash(rclone rmdir *)",
+      "PowerShell(rclone rmdir *)",
+      "Bash(rclone rmdirs *)",
+      "PowerShell(rclone rmdirs *)",
+      "Bash(rclone cleanup *)",
+      "PowerShell(rclone cleanup *)",
+      "Bash(rclone dedupe *)",
+      "PowerShell(rclone dedupe *)",
+      "Bash(rclone config delete *)",
+      "PowerShell(rclone config delete *)",
+      "Bash(rclone config show *)",
+      "PowerShell(rclone config show *)",
+      "Read(**/rclone.conf)",
+      "Read(**/.sync_history.json)"
+    ]
+  }
+}
