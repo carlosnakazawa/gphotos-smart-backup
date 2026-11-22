@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Harness + PSScriptAnalyzer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Harness static checks
+        shell: pwsh
+        run: ./scripts/Invoke-HarnessCheck.ps1 -SkipAnalyzer -SkipPester
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module -Name PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+
+      - name: Analyze
+        shell: pwsh
+        run: |
+          $issues = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+          $issues | Format-Table -AutoSize -Wrap
+          if ($issues) { throw "PSScriptAnalyzer reported $(@($issues).Count) issue(s)." }
+
+  test:
+    name: Pester (${{ matrix.os }}, ${{ matrix.shell }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+        shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Pester
+        run: Install-Module -Name Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Unit tests
+        run: |
+          Import-Module -Name Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = './tests'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
+
+      # Runs the real entry point the way Task Scheduler does (powershell.exe -File),
+      # on throwaway files, with -WhatIf: nothing is transcoded or uploaded.
+      - name: Smoke test (-WhatIf through powershell.exe -File)
+        run: |
+          # Actions prepends ErrorActionPreference=Stop; in PS 5.1 redirected native stderr would then throw.
+          $ErrorActionPreference = 'Continue'
+          $root = Join-Path $env:RUNNER_TEMP 'gphotos-smoke'
+          $src = Join-Path $root 'My Photos'
+          New-Item -ItemType Directory -Force -Path (Join-Path $src '2024\Trip') | Out-Null
+          Set-Content -Path (Join-Path $src '2024\Trip\a.jpg') -Value 'x'
+          Set-Content -Path (Join-Path $src '2024\Trip\b.mp4') -Value 'x'
+          Set-Content -Path (Join-Path $src 'notes.txt') -Value 'x'
+          $history = Join-Path $root 'history.json'
+          $output = powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./gphotos-backup.ps1 -SourcePath $src -HistoryFile $history -StagingPath (Join-Path $root 'staging') -WhatIf *>&1 | Out-String
+          $code = $LASTEXITCODE
+          $output
+          if ($code -ne 0) { throw "Unexpected exit code $code" }
+          if ($output -notmatch '2 new') { throw 'Expected 2 new media files to be detected.' }
+          if (Test-Path $history) { throw '-WhatIf must not create the history file.' }
