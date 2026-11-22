@@ -1,0 +1,23 @@
+# Upload history and staging (personal data: file names of your photos)
+.sync_history.json
+.sync_history.json.tmp
+*.sync_history*.json
+_Upload_Staging/
+
+# rclone configuration may contain OAuth tokens
+rclone.conf
+
+# Logs
+*.log
+
+# PowerShell / Pester test artifacts
+testResults.xml
+coverage.xml
+
+# Editors and OS files
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
