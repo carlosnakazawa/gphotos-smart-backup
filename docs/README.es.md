@@ -52,7 +52,7 @@ Este proyecto cubre ese hueco con un script de PowerShell pequeño y transparent
 | --- | --- |
 | **Incremental** | Un historial JSON (`ruta relativa -> tamaño + fecha de modificación`) indica qué archivos ya están en Google Fotos. Se suben los nuevos y los editados; el resto se omite en segundos. |
 | **Reanudable** | Cada archivo se registra justo después de subirlo. Si el PC entra en suspensión, se cae la red o pulsas Ctrl+C, la siguiente ejecución sigue desde el mismo archivo. |
-| **Compresión de vídeo inteligente** | H.265/HEVC con ffmpeg (`-crf 24 -preset veryfast` por defecto, ajustable). Se conservan la fecha de creación y la ubicación, incluidas las etiquetas `com.apple.quicktime.*` del iPhone. Si la versión H.265 no es más pequeña, se sube el original. |
+| **Compresión de vídeo inteligente** | H.265/HEVC con ffmpeg (`-crf 24 -preset veryfast` por defecto, ajustable). Se conservan la fecha de creación y la ubicación, incluidas las etiquetas `com.apple.quicktime.*` del iPhone. Si la versión H.265 no es más pequeña, se sube el original. Los vídeos que ya son compactos (por ejemplo, HEVC de iPhones recientes) se detectan con ffprobe y se suben tal cual, sin perder tiempo en recodificarlos. |
 | **Álbumes (opcional)** | `-AlbumPerFolder` pone los archivos de cada subcarpeta en un álbum con su nombre. |
 | **Seguro** | Solo sube (`rclone copyto`). No sigue enlaces simbólicos ni uniones. `-WhatIf` lo muestra todo sin subir nada. Un historial dañado detiene la ejecución en lugar de volver a subir toda la biblioteca. |
 | **Listo para automatizar** | Códigos de salida: `0` éxito, `1` error (detenido), `2` terminado, pero algunos vídeos no se pudieron convertir. |
@@ -169,9 +169,10 @@ Get-Help .\gphotos-backup.ps1 -Detailed
 | `-Crf` | `24` | Calidad H.265, de 0 a 51. Cuanto más bajo, más calidad y archivos más grandes. Entre 22 y 28 es un rango razonable. |
 | `-Preset` | `veryfast` | Velocidad de x265. `medium` y `slow` dan archivos más pequeños, pero tardan más. |
 | `-NoTranscode` | desactivado | No usa ffmpeg. |
+| `-SkipTranscodeBelowMbps` | `4` | Sube el vídeo tal cual si su bitrate, normalizado a 1080p a 30 fps, es igual o inferior a este valor (el doble para HEVC, AV1 y VP9). `0` convierte todos los vídeos. |
 | `-PhotoExtensions` / `-VideoExtensions` | ver arriba | Tipos de archivo que se suben. |
 | `-ExcludeFolder` | `_Upload_Staging` | Nombres de carpeta que se omiten, a cualquier nivel. |
-| `-RclonePath` / `-FfmpegPath` | `rclone` / `ffmpeg` | Ejecutables, si no están en el `PATH`. |
+| `-RclonePath` / `-FfmpegPath` / `-FfprobePath` | `rclone` / `ffmpeg` / junto a ffmpeg | Ejecutables, si no están en el `PATH`. |
 | `-WhatIf` / `-Confirm` | | Vista previa, o confirmación de cada archivo. |
 
 Cualquier opción de rclone se puede definir con variables de entorno, por ejemplo `$env:RCLONE_BWLIMIT = '4M'` para limitar el ancho de banda de subida.
@@ -254,7 +255,6 @@ Los informes de errores, las ideas, las traducciones y los pull requests son bie
 
 - Script auxiliar `Register-BackupTask.ps1` para crear la tarea programada con un solo comando.
 - Codificación por hardware opcional (NVENC, Quick Sync, AMF) para convertir más rápido.
-- No recodificar vídeos que ya son HEVC o pequeños, según su bitrate.
 - Conservar los metadatos HDR al recodificar.
 - Archivo de registro e informe JSON de cada ejecución.
 - Publicar en la PowerShell Gallery y en `winget`.

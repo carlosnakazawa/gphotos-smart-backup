@@ -50,7 +50,7 @@ This project fills that gap with a small, transparent PowerShell script built on
 | --- | --- |
 | **Incremental** | A JSON history (`relative path -> size + last modified time`) tells which files are already in Google Photos. New and edited files are uploaded; everything else is skipped in seconds. |
 | **Resumable** | Each file is recorded right after its upload. If the PC sleeps, the network drops or you press Ctrl+C, the next run continues from the same file. |
-| **Smart video compression** | H.265/HEVC with ffmpeg (`-crf 24 -preset veryfast` by default, tunable). The creation date and the location are kept, including the Apple `com.apple.quicktime.*` tags from iPhones. If the H.265 version is not smaller, the original is uploaded. |
+| **Smart video compression** | H.265/HEVC with ffmpeg (`-crf 24 -preset veryfast` by default, tunable). The creation date and the location are kept, including the Apple `com.apple.quicktime.*` tags from iPhones. If the H.265 version is not smaller, the original is uploaded. Videos that are already compact (for example HEVC from recent iPhones) are detected with ffprobe and uploaded as they are, without wasting time on a re-encode. |
 | **Albums (optional)** | `-AlbumPerFolder` puts the files of each subfolder into an album named after it. |
 | **Safe** | Upload-only (`rclone copyto`). It does not follow symbolic links or junctions. `-WhatIf` previews everything without uploading. A corrupted history stops the run instead of uploading your whole library again. |
 | **Friendly to automation** | Exit codes: `0` success, `1` error (stopped), `2` done but some videos could not be transcoded. |
@@ -167,9 +167,10 @@ Get-Help .\gphotos-backup.ps1 -Detailed
 | `-Crf` | `24` | H.265 quality, from 0 to 51. Lower values give better quality and bigger files. 22 to 28 is a sensible range. |
 | `-Preset` | `veryfast` | x265 speed. `medium` and `slow` give smaller files but take longer. |
 | `-NoTranscode` | off | Do not use ffmpeg. |
+| `-SkipTranscodeBelowMbps` | `4` | Upload a video as it is when its bit rate, normalized to 1080p at 30 fps, is at or below this value (twice the value for HEVC, AV1 and VP9). `0` transcodes every video. |
 | `-PhotoExtensions` / `-VideoExtensions` | see above | File types to upload. |
 | `-ExcludeFolder` | `_Upload_Staging` | Folder names to skip at any depth. |
-| `-RclonePath` / `-FfmpegPath` | `rclone` / `ffmpeg` | Executables, if they are not on `PATH`. |
+| `-RclonePath` / `-FfmpegPath` / `-FfprobePath` | `rclone` / `ffmpeg` / next to ffmpeg | Executables, if they are not on `PATH`. |
 | `-WhatIf` / `-Confirm` | | Preview, or confirm each file. |
 
 Any rclone option can be set through environment variables, for example `$env:RCLONE_BWLIMIT = '4M'` to limit the upload bandwidth.
@@ -252,7 +253,6 @@ Bug reports, ideas, translations and pull requests are welcome, in any language.
 
 - `Register-BackupTask.ps1` helper to create the scheduled task in one command.
 - Optional hardware encoding (NVENC, Quick Sync, AMF) for faster transcoding.
-- Skip transcoding for videos that are already HEVC or small, based on bitrate.
 - Keep HDR metadata when re-encoding.
 - Log file and JSON run report.
 - Publish to the PowerShell Gallery and `winget`.

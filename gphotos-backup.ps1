@@ -48,6 +48,12 @@
 .PARAMETER NoTranscode
     Upload videos as they are, without ffmpeg.
 
+.PARAMETER SkipTranscodeBelowMbps
+    Videos that are already compact are uploaded as they are, without spending time on a
+    re-encode that would not save space. ffprobe reads the video bitrate, normalized to
+    1080p at 30 fps; at or below this value (doubled for HEVC, AV1 and VP9 sources) the video
+    is not transcoded. Default 4. Use 0 to transcode every video.
+
 .PARAMETER PhotoExtensions
     Photo file extensions to upload. RAW files are not included by default.
 
@@ -63,6 +69,10 @@
 
 .PARAMETER FfmpegPath
     ffmpeg executable. Default: "ffmpeg" from PATH.
+
+.PARAMETER FfprobePath
+    ffprobe executable. Default: next to FfmpegPath, or "ffprobe" from PATH. Without ffprobe,
+    every video is transcoded.
 
 .EXAMPLE
     .\gphotos-backup.ps1 -WhatIf
@@ -90,14 +100,17 @@ param(
     [ValidateSet('ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow')]
     [string] $Preset = 'veryfast',
     [switch] $NoTranscode,
+    [ValidateRange(0, 1000)]
+    [double] $SkipTranscodeBelowMbps = 4,
     [string[]] $PhotoExtensions = @('.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp', '.gif'),
     [string[]] $VideoExtensions = @('.mp4', '.mov', '.m4v'),
     [string[]] $ExcludeFolder = @('_Upload_Staging'),
     [string] $RclonePath = 'rclone',
-    [string] $FfmpegPath = 'ffmpeg'
+    [string] $FfmpegPath = 'ffmpeg',
+    [string] $FfprobePath
 )
 
-$script:AppVersion = '1.0.0'
+$script:AppVersion = '1.1.0'
 
 function Show-BackupMessage {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Interactive tool: colored console output.')]
@@ -263,6 +276,104 @@ function Get-VideoTranscodeArgument {
     )
 }
 
+function Get-FfprobePath {
+    # ffprobe ships next to ffmpeg: use the same folder when FfmpegPath is a full path.
+    param([Parameter(Mandatory = $true)] [string] $FfmpegPath)
+    $directory = Split-Path -Path $FfmpegPath -Parent
+    if ([string]::IsNullOrEmpty($directory)) { return 'ffprobe' }
+    return Join-Path -Path $directory -ChildPath ('ffprobe' + [System.IO.Path]::GetExtension($FfmpegPath))
+}
+
+function ConvertTo-InvariantNumber {
+    # ffprobe prints "29.97" or "30000/1001" whatever the Windows locale is (pt-BR uses a comma).
+    param([AllowNull()] [object] $Value)
+    if ($null -eq $Value) { return 0.0 }
+    if ($Value -is [System.ValueType]) { return [double] $Value }
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    $style = [System.Globalization.NumberStyles]::Float
+    $parts = ([string] $Value).Trim().Split('/')
+    $numbers = @()
+    foreach ($part in $parts) {
+        $number = 0.0
+        if (-not [double]::TryParse($part, $style, $culture, [ref] $number)) { return 0.0 }
+        $numbers += $number
+    }
+    if ($numbers.Count -eq 1) { return $numbers[0] }
+    if ($numbers.Count -eq 2 -and $numbers[1] -ne 0) { return $numbers[0] / $numbers[1] }
+    return 0.0
+}
+
+function ConvertFrom-FfprobeJson {
+    # Returns codec, size, frame rate and video bit rate (bit/s), or $null when unreadable.
+    param([AllowEmptyString()] [AllowNull()] [string] $Json)
+    if ([string]::IsNullOrWhiteSpace($Json)) { return $null }
+    try { $data = ConvertFrom-Json -InputObject $Json } catch { return $null }
+    $stream = @($data.streams) | Where-Object { $null -ne $_ } | Select-Object -First 1
+    if ($null -eq $stream) { return $null }
+
+    # Some containers have no per-stream bit rate: fall back to the file bit rate, then size/duration.
+    $bitRate = ConvertTo-InvariantNumber -Value $stream.bit_rate
+    if ($bitRate -le 0 -and $data.format) { $bitRate = ConvertTo-InvariantNumber -Value $data.format.bit_rate }
+    if ($bitRate -le 0 -and $data.format) {
+        $size = ConvertTo-InvariantNumber -Value $data.format.size
+        $duration = ConvertTo-InvariantNumber -Value $data.format.duration
+        if ($size -gt 0 -and $duration -gt 0) { $bitRate = $size * 8 / $duration }
+    }
+    $codec = ([string] $stream.codec_name).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrEmpty($codec)) { $codec = 'unknown' }
+    [PSCustomObject]@{
+        Codec   = $codec
+        Width   = [int] (ConvertTo-InvariantNumber -Value $stream.width)
+        Height  = [int] (ConvertTo-InvariantNumber -Value $stream.height)
+        Fps     = ConvertTo-InvariantNumber -Value $stream.avg_frame_rate
+        BitRate = $bitRate
+    }
+}
+
+function Get-VideoInfo {
+    # Native call whose output is parsed (mock it in tests).
+    param(
+        [Parameter(Mandatory = $true)] [string] $FfprobePath,
+        [Parameter(Mandatory = $true)] [string] $Path
+    )
+    $arguments = @(
+        # "V" (uppercase) skips attached pictures: cover art or thumbnails embedded in MP4/M4V.
+        '-v', 'quiet', '-select_streams', 'V:0',
+        '-show_entries', 'stream=codec_name,width,height,avg_frame_rate,bit_rate:format=bit_rate,duration,size',
+        '-of', 'json', $Path
+    )
+    $output = @(& $FfprobePath @arguments)
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return ConvertFrom-FfprobeJson -Json ($output -join "`n")
+}
+
+function Get-TranscodeDecision {
+    # Decides whether re-encoding is worth it. The bit rate is normalized to 1080p30 so one
+    # limit works for 720p, 4K, 30 and 60 fps. HEVC/AV1/VP9 sources get twice the limit,
+    # because re-encoding an efficient codec saves less and costs a generation of quality.
+    param(
+        [AllowNull()] [object] $VideoInfo,
+        [double] $SkipBelowMbps = 4
+    )
+    if ($SkipBelowMbps -le 0) {
+        return [PSCustomObject]@{ Transcode = $true; Reason = 'bit rate check disabled'; EquivalentMbps = 0.0 }
+    }
+    if ($null -eq $VideoInfo -or $VideoInfo.BitRate -le 0 -or $VideoInfo.Width -le 0 -or $VideoInfo.Height -le 0) {
+        return [PSCustomObject]@{ Transcode = $true; Reason = 'bit rate unknown'; EquivalentMbps = 0.0 }
+    }
+    $fps = [double] $VideoInfo.Fps
+    if ($fps -le 0 -or $fps -gt 1000) { $fps = 30 }
+    $pixels = [double] $VideoInfo.Width * [double] $VideoInfo.Height
+    $equivalent = ($VideoInfo.BitRate / 1000000) * ((1920 * 1080) / $pixels) * (30 / $fps)
+    $threshold = $SkipBelowMbps
+    if (@('hevc', 'av1', 'vp9') -contains $VideoInfo.Codec) { $threshold = $SkipBelowMbps * 2 }
+    [PSCustomObject]@{
+        Transcode      = ($equivalent -gt $threshold)
+        Reason         = ('{0} at {1:N1} Mbps 1080p30-equivalent, limit {2:N1}' -f $VideoInfo.Codec, $equivalent, $threshold)
+        EquivalentMbps = $equivalent
+    }
+}
+
 function Invoke-ExternalTool {
     # Single place for native calls (easy to mock in tests). Output goes to the console.
     param(
@@ -294,14 +405,16 @@ function Invoke-GPhotosBackup {
         [int] $Crf = 24,
         [string] $Preset = 'veryfast',
         [switch] $NoTranscode,
+        [double] $SkipTranscodeBelowMbps = 4,
         [string[]] $PhotoExtensions = @('.jpg', '.jpeg', '.png'),
         [string[]] $VideoExtensions = @('.mp4', '.mov'),
         [string[]] $ExcludeFolder = @(),
         [string] $RclonePath = 'rclone',
-        [string] $FfmpegPath = 'ffmpeg'
+        [string] $FfmpegPath = 'ffmpeg',
+        [string] $FfprobePath
     )
 
-    $result = [PSCustomObject]@{ Found = 0; Pending = 0; Changed = 0; Uploaded = 0; Skipped = 0; ExitCode = 0 }
+    $result = [PSCustomObject]@{ Found = 0; Pending = 0; Changed = 0; Uploaded = 0; Skipped = 0; NotTranscoded = 0; ExitCode = 0 }
     $isPreview = [bool] $WhatIfPreference
 
     Show-BackupMessage "=== gphotos-smart-backup v$script:AppVersion ===" -Level Info
@@ -386,8 +499,17 @@ function Invoke-GPhotosBackup {
             $problems.Add("rclone has no remote named '$remoteName'. Create it with: rclone config (see README).")
         }
     }
-    if ($needFfmpeg -and -not (Test-CommandAvailable -Name $FfmpegPath)) {
+    $hasFfmpeg = $needFfmpeg -and (Test-CommandAvailable -Name $FfmpegPath)
+    if ($needFfmpeg -and -not $hasFfmpeg) {
         $problems.Add("ffmpeg was not found ('$FfmpegPath'). Install it with: winget install Gyan.FFmpeg, or use -NoTranscode.")
+    }
+    # ffprobe is optional: without it every video is transcoded, as in earlier versions.
+    $canProbe = $false
+    $ffprobe = $FfprobePath
+    if ([string]::IsNullOrWhiteSpace($ffprobe)) { $ffprobe = Get-FfprobePath -FfmpegPath $FfmpegPath }
+    if ($hasFfmpeg -and $SkipTranscodeBelowMbps -gt 0) {
+        if (Test-CommandAvailable -Name $ffprobe) { $canProbe = $true }
+        else { Write-Warning "ffprobe was not found ('$ffprobe'); every video will be transcoded." }
     }
     foreach ($problem in $problems) {
         if ($isPreview) { Write-Warning $problem } else { Show-BackupMessage $problem -Level Error }
@@ -408,7 +530,18 @@ function Invoke-GPhotosBackup {
         $uploadPath = $item.File.FullName
         $stagedFile = $null
         try {
-            if ($item.IsVideo -and -not $NoTranscode) {
+            $transcode = $item.IsVideo -and -not $NoTranscode
+            $compactOriginal = $false
+            if ($transcode -and $canProbe) {
+                $info = Get-VideoInfo -FfprobePath $ffprobe -Path $item.File.FullName
+                $decision = Get-TranscodeDecision -VideoInfo $info -SkipBelowMbps $SkipTranscodeBelowMbps
+                if (-not $decision.Transcode) {
+                    Show-BackupMessage "  -> Already compact ($($decision.Reason)); uploading the original." -Level Detail
+                    $compactOriginal = $true
+                    $transcode = $false
+                }
+            }
+            if ($transcode) {
                 if (-not (Test-Path -LiteralPath $staging)) {
                     $null = New-Item -ItemType Directory -Path $staging -Force
                 }
@@ -443,6 +576,8 @@ function Invoke-GPhotosBackup {
             $history[$item.RelativePath] = $item.Stamp
             Save-BackupHistory -History $history -Path $historyPath
             $result.Uploaded++
+            # Counted only once the upload is recorded, so a failed upload is not reported.
+            if ($compactOriginal) { $result.NotTranscoded++ }
             Show-BackupMessage '  -> Done.' -Level Success
         }
         finally {
@@ -463,6 +598,9 @@ function Invoke-GPhotosBackup {
     else {
         Show-BackupMessage ("Uploaded {0} file(s). All done." -f $result.Uploaded) -Level Success
     }
+    if ($result.NotTranscoded -gt 0) {
+        Show-BackupMessage ("{0} video(s) were already compact and were uploaded without re-encoding." -f $result.NotTranscoded) -Level Detail
+    }
     return $result
 }
 
@@ -477,12 +615,14 @@ $backupArgs = @{
     StagingPath     = $StagingPath
     Crf             = $Crf
     Preset          = $Preset
-    NoTranscode     = $NoTranscode
-    PhotoExtensions = $PhotoExtensions
-    VideoExtensions = $VideoExtensions
-    ExcludeFolder   = $ExcludeFolder
-    RclonePath      = $RclonePath
-    FfmpegPath      = $FfmpegPath
+    NoTranscode            = $NoTranscode
+    SkipTranscodeBelowMbps = $SkipTranscodeBelowMbps
+    PhotoExtensions        = $PhotoExtensions
+    VideoExtensions        = $VideoExtensions
+    ExcludeFolder          = $ExcludeFolder
+    RclonePath             = $RclonePath
+    FfmpegPath             = $FfmpegPath
+    FfprobePath            = $FfprobePath
 }
 $summary = @(Invoke-GPhotosBackup @backupArgs)[-1]
 exit $summary.ExitCode

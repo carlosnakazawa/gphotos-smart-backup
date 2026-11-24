@@ -22,11 +22,12 @@ Canonical instructions and guardrails for AI coding agents (Claude Code, Codex, 
 Get-MediaFile (no reparse points, excluded folders)
   -> Get-RelativeMediaPath + Get-MediaFileStamp   (history key + value)
   -> compare with Read-BackupHistory
+  -> per video: Get-VideoInfo (ffprobe) -> Get-TranscodeDecision (skip re-encode when already compact)
   -> per file: [Get-VideoTranscodeArgument -> Invoke-ExternalTool ffmpeg] -> Invoke-ExternalTool rclone copyto
   -> Save-BackupHistory (atomic write) after EACH successful upload
 ```
 
-All native calls go through `Invoke-ExternalTool`, which is the single point to mock in tests.
+Native tools are only called from three functions, and tests mock all of them: `Invoke-ExternalTool` (ffmpeg and rclone, output shown on the console), `Get-RcloneRemoteList` and `Get-VideoInfo` (output parsed). Keep parsing (`ConvertFrom-FfprobeJson`) and decisions (`Get-TranscodeDecision`) in pure functions so they can be tested without the tools.
 
 ## Non-Negotiable Guardrails
 
@@ -48,7 +49,7 @@ All native calls go through `Invoke-ExternalTool`, which is the single point to 
 
 - **Never run the script live.** Use `-WhatIf` and always pass `-SourcePath`, `-HistoryFile` and `-StagingPath` pointing to a temporary folder (`$env:TEMP`, Pester `TestDrive:`). A live run uploads private photos to someone's Google account and consumes their storage, and it cannot be undone through the API.
 - **Never read or print** the user's `.sync_history.json`, `rclone.conf`, or `rclone config show` output. They contain private file names and OAuth tokens.
-- **Tests must not reach the real Pictures folder.** Every end-to-end test passes `-HistoryFile` explicitly (the default points to the real one) and mocks `Invoke-ExternalTool`, `Test-CommandAvailable` and `Get-RcloneRemoteList`.
+- **Tests must not reach the real Pictures folder.** Every end-to-end test passes `-HistoryFile` explicitly (the default points to the real one) and mocks `Invoke-ExternalTool`, `Test-CommandAvailable`, `Get-RcloneRemoteList` and `Get-VideoInfo`.
 
 ### 4. PowerShell 5.1 and encoding compatibility
 
@@ -62,7 +63,9 @@ All native calls go through `Invoke-ExternalTool`, which is the single point to 
 ### 5. Media correctness
 
 - Keep `-map_metadata 0 -movflags +use_metadata_tags` in `Get-VideoTranscodeArgument`. Without `use_metadata_tags`, iPhone videos lose their creation date and location (verified with ffprobe).
-- Keep the "upload the original if the H.265 file is not smaller" rule.
+- Keep the "upload the original if the H.265 file is not smaller" rule. It is the safety net behind the ffprobe check, which only avoids wasted encodes.
+- Parse ffprobe numbers with the invariant culture (`ConvertTo-InvariantNumber`). On a pt-BR or de-DE system, `[double]'29.97'` and `-f '{0}'` use a comma.
+- Do not skip a video just because it is HEVC. A 100 Mbps HEVC file from an action cam or a camera still shrinks a lot. Decide on the bit rate normalized to 1080p30.
 - The Google Photos `upload` folder is flat. Only the file name goes after `remote:upload/`. Albums are `remote:album/<name>/<file>`.
 
 ### 6. Documentation
