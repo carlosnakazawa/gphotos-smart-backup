@@ -10,7 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Added
 
 - Videos that are already compact are uploaded as they are, without spending time on a re-encode that would not save space. ffprobe reads the codec, resolution, frame rate and bit rate; the bit rate is normalized to 1080p at 30 fps and compared with `-SkipTranscodeBelowMbps` (default `4`, doubled for HEVC, AV1 and VP9 sources). For example, a typical iPhone 4K HEVC video is uploaded directly, while a 100 Mbps HEVC video from an action cam is still compressed.
-- `-FfprobePath`. By default ffprobe is looked up next to ffmpeg. Without ffprobe, every video is transcoded as before.
+- `-FfprobePath`. By default ffprobe is looked up next to ffmpeg. Without ffprobe, every video is transcoded as before. Cover art or thumbnails embedded in MP4/M4V files are ignored when probing.
 - The summary shows how many videos were uploaded without re-encoding.
 
 ### Changed

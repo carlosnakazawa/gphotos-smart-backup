@@ -319,8 +319,10 @@ function ConvertFrom-FfprobeJson {
         $duration = ConvertTo-InvariantNumber -Value $data.format.duration
         if ($size -gt 0 -and $duration -gt 0) { $bitRate = $size * 8 / $duration }
     }
+    $codec = ([string] $stream.codec_name).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrEmpty($codec)) { $codec = 'unknown' }
     [PSCustomObject]@{
-        Codec   = ([string] $stream.codec_name).ToLowerInvariant()
+        Codec   = $codec
         Width   = [int] (ConvertTo-InvariantNumber -Value $stream.width)
         Height  = [int] (ConvertTo-InvariantNumber -Value $stream.height)
         Fps     = ConvertTo-InvariantNumber -Value $stream.avg_frame_rate
@@ -335,7 +337,8 @@ function Get-VideoInfo {
         [Parameter(Mandatory = $true)] [string] $Path
     )
     $arguments = @(
-        '-v', 'quiet', '-select_streams', 'v:0',
+        # "V" (uppercase) skips attached pictures: cover art or thumbnails embedded in MP4/M4V.
+        '-v', 'quiet', '-select_streams', 'V:0',
         '-show_entries', 'stream=codec_name,width,height,avg_frame_rate,bit_rate:format=bit_rate,duration,size',
         '-of', 'json', $Path
     )
@@ -496,14 +499,15 @@ function Invoke-GPhotosBackup {
             $problems.Add("rclone has no remote named '$remoteName'. Create it with: rclone config (see README).")
         }
     }
-    if ($needFfmpeg -and -not (Test-CommandAvailable -Name $FfmpegPath)) {
+    $hasFfmpeg = $needFfmpeg -and (Test-CommandAvailable -Name $FfmpegPath)
+    if ($needFfmpeg -and -not $hasFfmpeg) {
         $problems.Add("ffmpeg was not found ('$FfmpegPath'). Install it with: winget install Gyan.FFmpeg, or use -NoTranscode.")
     }
     # ffprobe is optional: without it every video is transcoded, as in earlier versions.
     $canProbe = $false
     $ffprobe = $FfprobePath
     if ([string]::IsNullOrWhiteSpace($ffprobe)) { $ffprobe = Get-FfprobePath -FfmpegPath $FfmpegPath }
-    if ($needFfmpeg -and $SkipTranscodeBelowMbps -gt 0) {
+    if ($hasFfmpeg -and $SkipTranscodeBelowMbps -gt 0) {
         if (Test-CommandAvailable -Name $ffprobe) { $canProbe = $true }
         else { Write-Warning "ffprobe was not found ('$ffprobe'); every video will be transcoded." }
     }
@@ -527,12 +531,13 @@ function Invoke-GPhotosBackup {
         $stagedFile = $null
         try {
             $transcode = $item.IsVideo -and -not $NoTranscode
+            $compactOriginal = $false
             if ($transcode -and $canProbe) {
                 $info = Get-VideoInfo -FfprobePath $ffprobe -Path $item.File.FullName
                 $decision = Get-TranscodeDecision -VideoInfo $info -SkipBelowMbps $SkipTranscodeBelowMbps
                 if (-not $decision.Transcode) {
                     Show-BackupMessage "  -> Already compact ($($decision.Reason)); uploading the original." -Level Detail
-                    $result.NotTranscoded++
+                    $compactOriginal = $true
                     $transcode = $false
                 }
             }
@@ -571,6 +576,8 @@ function Invoke-GPhotosBackup {
             $history[$item.RelativePath] = $item.Stamp
             Save-BackupHistory -History $history -Path $historyPath
             $result.Uploaded++
+            # Counted only once the upload is recorded, so a failed upload is not reported.
+            if ($compactOriginal) { $result.NotTranscoded++ }
             Show-BackupMessage '  -> Done.' -Level Success
         }
         finally {

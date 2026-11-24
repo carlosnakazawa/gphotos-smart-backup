@@ -187,9 +187,50 @@ Describe 'Video probing' {
         (Get-TranscodeDecision -VideoInfo $tiny -SkipBelowMbps 0).Transcode | Should -BeTrue
     }
 
-    It 'assumes 30 fps when the frame rate is missing' {
-        $info = [PSCustomObject]@{ Codec = 'h264'; Width = 1920; Height = 1080; Fps = 0; BitRate = 6000000 }
+    It 'assumes 30 fps when the frame rate is missing or is a timebase (<Fps>)' -ForEach @(
+        @{ Fps = 0 }
+        @{ Fps = 90000 }
+    ) {
+        $info = [PSCustomObject]@{ Codec = 'h264'; Width = 1920; Height = 1080; Fps = $Fps; BitRate = 6000000 }
         [math]::Round((Get-TranscodeDecision -VideoInfo $info -SkipBelowMbps 4).EquivalentMbps, 1) | Should -Be 6
+    }
+
+    It 'doubles the limit for every efficient codec (<Codec>)' -ForEach @(
+        @{ Codec = 'hevc' }
+        @{ Codec = 'av1' }
+        @{ Codec = 'vp9' }
+    ) {
+        $info = [PSCustomObject]@{ Codec = $Codec; Width = 1920; Height = 1080; Fps = 30; BitRate = 6000000 }
+        (Get-TranscodeDecision -VideoInfo $info -SkipBelowMbps 4).Transcode | Should -BeFalse
+        $h264 = [PSCustomObject]@{ Codec = 'h264'; Width = 1920; Height = 1080; Fps = 30; BitRate = 6000000 }
+        (Get-TranscodeDecision -VideoInfo $h264 -SkipBelowMbps 4).Transcode | Should -BeTrue
+    }
+
+    It 'transcodes when the width or height is unknown' {
+        $noWidth = [PSCustomObject]@{ Codec = 'h264'; Width = 0; Height = 1080; Fps = 30; BitRate = 1000000 }
+        (Get-TranscodeDecision -VideoInfo $noWidth -SkipBelowMbps 4).Transcode | Should -BeTrue
+        $noHeight = [PSCustomObject]@{ Codec = 'h264'; Width = 1920; Height = 0; Fps = 30; BitRate = 1000000 }
+        (Get-TranscodeDecision -VideoInfo $noHeight -SkipBelowMbps 4).Transcode | Should -BeTrue
+    }
+
+    It 'names a missing codec "unknown"' {
+        $info = ConvertFrom-FfprobeJson -Json '{ "streams": [ { "width": 1920, "height": 1080, "avg_frame_rate": "30/1", "bit_rate": "2000000" } ] }'
+        $info.Codec | Should -Be 'unknown'
+        (Get-TranscodeDecision -VideoInfo $info -SkipBelowMbps 4).Reason | Should -Match '^unknown at '
+    }
+
+    It 'asks ffprobe for the first real video stream, not the cover art (V:0)' {
+        # A fake ffprobe (a function), so the test does not need ffprobe installed on the CI runner.
+        function Invoke-FakeFfprobe {
+            $script:probeArgs = $args
+            $global:LASTEXITCODE = 0
+            '{ "streams": [ { "codec_name": "h264", "width": 1920, "height": 1080, "avg_frame_rate": "30/1", "bit_rate": "17000000" } ] }'
+        }
+        $info = Get-VideoInfo -FfprobePath 'Invoke-FakeFfprobe' -Path 'C:\clip with cover.mp4'
+        $info.Codec | Should -Be 'h264'
+        $selected = $script:probeArgs[[array]::IndexOf($script:probeArgs, '-select_streams') + 1]
+        $selected | Should -BeExactly 'V:0'
+        $script:probeArgs[-1] | Should -Be 'C:\clip with cover.mp4'
     }
 }
 
@@ -363,10 +404,41 @@ Describe 'Invoke-GPhotosBackup' {
         Should -Invoke Invoke-ExternalTool -ParameterFilter { $FilePath -eq 'ffmpeg' } -Times 1 -Exactly
     }
 
+    It 'does not count a compact video when its upload fails' {
+        Mock Get-VideoInfo { [PSCustomObject]@{ Codec = 'hevc'; Width = 3840; Height = 2160; Fps = 30; BitRate = 22000000 } }
+        Mock Invoke-ExternalTool -ParameterFilter { $FilePath -eq 'rclone' -and $ArgumentList[1] -like '*b.mp4' } { 7 }
+        $result = Invoke-GPhotosBackup @backupArgs
+        $result.ExitCode | Should -Be 1
+        $result.NotTranscoded | Should -Be 0
+    }
+
+    It 'uses an explicit -FfprobePath' {
+        $null = Invoke-GPhotosBackup @backupArgs -FfprobePath 'D:\bin\ffprobe.exe'
+        Should -Invoke Get-VideoInfo -ParameterFilter { $FfprobePath -eq 'D:\bin\ffprobe.exe' } -Times 1 -Exactly
+    }
+
+    It 'looks for ffprobe next to a full -FfmpegPath' {
+        Mock Invoke-ExternalTool -ParameterFilter { $FilePath -eq 'C:\Tools\ffmpeg\bin\ffmpeg.exe' } {
+            [System.IO.File]::WriteAllBytes($ArgumentList[-1], (New-Object -TypeName byte[] -ArgumentList 10))
+            0
+        }
+        $null = Invoke-GPhotosBackup @backupArgs -FfmpegPath 'C:\Tools\ffmpeg\bin\ffmpeg.exe'
+        Should -Invoke Get-VideoInfo -ParameterFilter { $FfprobePath -eq 'C:\Tools\ffmpeg\bin\ffprobe.exe' } -Times 1 -Exactly
+    }
+
+    It 'does not warn about ffprobe when ffmpeg itself is missing' {
+        Mock Test-CommandAvailable -ParameterFilter { $Name -eq 'ffmpeg' } { $false }
+        $result = Invoke-GPhotosBackup @backupArgs
+        $result.ExitCode | Should -Be 1
+        Should -Invoke Write-Warning -ParameterFilter { $Message -like '*ffprobe*' } -Times 0 -Exactly
+        Should -Invoke Test-CommandAvailable -ParameterFilter { $Name -eq 'ffprobe' } -Times 0 -Exactly
+    }
+
     It 'transcodes every video when ffprobe is missing' {
         Mock Test-CommandAvailable -ParameterFilter { $Name -eq 'ffprobe' } { $false }
         $result = Invoke-GPhotosBackup @backupArgs
         $result.ExitCode | Should -Be 0
+        Should -Invoke Write-Warning -ParameterFilter { $Message -like '*ffprobe*' } -Times 1 -Exactly
         Should -Invoke Get-VideoInfo -Times 0 -Exactly
         Should -Invoke Invoke-ExternalTool -ParameterFilter { $FilePath -eq 'ffmpeg' } -Times 1 -Exactly
     }
