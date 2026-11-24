@@ -120,6 +120,79 @@ Describe 'Path and naming helpers' {
     }
 }
 
+Describe 'Video probing' {
+    It 'finds ffprobe next to ffmpeg' {
+        Get-FfprobePath -FfmpegPath 'ffmpeg' | Should -Be 'ffprobe'
+        Get-FfprobePath -FfmpegPath 'C:\Tools\ffmpeg\bin\ffmpeg.exe' | Should -Be 'C:\Tools\ffmpeg\bin\ffprobe.exe'
+    }
+
+    It 'parses numbers and fractions the same way on a pt-BR system' {
+        $previous = [System.Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('pt-BR')
+            ConvertTo-InvariantNumber -Value '29.97' | Should -Be 29.97
+            [math]::Round((ConvertTo-InvariantNumber -Value '30000/1001'), 3) | Should -Be 29.97
+            ConvertTo-InvariantNumber -Value 1920 | Should -Be 1920
+            ConvertTo-InvariantNumber -Value '0/0' | Should -Be 0
+            ConvertTo-InvariantNumber -Value 'N/A' | Should -Be 0
+            ConvertTo-InvariantNumber -Value $null | Should -Be 0
+        }
+        finally {
+            [System.Threading.Thread]::CurrentThread.CurrentCulture = $previous
+        }
+    }
+
+    It 'reads codec, size, frame rate and stream bit rate from ffprobe JSON' {
+        $json = '{ "streams": [ { "codec_name": "HEVC", "width": 3840, "height": 2160, "avg_frame_rate": "30000/1001", "bit_rate": "22000000" } ], "format": { "bit_rate": "22300000" } }'
+        $info = ConvertFrom-FfprobeJson -Json $json
+        $info.Codec | Should -Be 'hevc'
+        $info.Width | Should -Be 3840
+        $info.Height | Should -Be 2160
+        [math]::Round($info.Fps, 2) | Should -Be 29.97
+        $info.BitRate | Should -Be 22000000
+    }
+
+    It 'falls back to the file bit rate, then to size and duration' {
+        $formatRate = ConvertFrom-FfprobeJson -Json '{ "streams": [ { "codec_name": "h264", "width": 1920, "height": 1080, "avg_frame_rate": "30/1" } ], "format": { "bit_rate": "8000000" } }'
+        $formatRate.BitRate | Should -Be 8000000
+        $sizeRate = ConvertFrom-FfprobeJson -Json '{ "streams": [ { "codec_name": "h264", "width": 1920, "height": 1080, "avg_frame_rate": "30/1" } ], "format": { "size": "10000000", "duration": "10.0" } }'
+        $sizeRate.BitRate | Should -Be 8000000
+    }
+
+    It 'returns nothing for empty or invalid output' {
+        ConvertFrom-FfprobeJson -Json '' | Should -BeNullOrEmpty
+        ConvertFrom-FfprobeJson -Json 'not json' | Should -BeNullOrEmpty
+        ConvertFrom-FfprobeJson -Json '{ "streams": [] }' | Should -BeNullOrEmpty
+    }
+
+    It '<Case>: transcode = <Expected>' -ForEach @(
+        @{ Case = 'iPhone 4K30 HEVC (~22 Mbps)'; Codec = 'hevc'; Width = 3840; Height = 2160; Fps = 30; Mbps = 22; Expected = $false }
+        @{ Case = 'iPhone 4K60 HEVC (~50 Mbps)'; Codec = 'hevc'; Width = 3840; Height = 2160; Fps = 60; Mbps = 50; Expected = $false }
+        @{ Case = 'portrait 1080p30 HEVC (~8 Mbps)'; Codec = 'hevc'; Width = 1080; Height = 1920; Fps = 30; Mbps = 8; Expected = $false }
+        @{ Case = 'action cam 4K60 HEVC (~100 Mbps)'; Codec = 'hevc'; Width = 3840; Height = 2160; Fps = 60; Mbps = 100; Expected = $true }
+        @{ Case = 'camera 4K30 HEVC (~100 Mbps)'; Codec = 'hevc'; Width = 3840; Height = 2160; Fps = 30; Mbps = 100; Expected = $true }
+        @{ Case = 'Android 1080p30 H.264 (~17 Mbps)'; Codec = 'h264'; Width = 1920; Height = 1080; Fps = 30; Mbps = 17; Expected = $true }
+        @{ Case = 'messaging app 720p H.264 (~1.5 Mbps)'; Codec = 'h264'; Width = 1280; Height = 720; Fps = 30; Mbps = 1.5; Expected = $false }
+        @{ Case = 'small H.264 at 4 Mbps 1080p30 (limit)'; Codec = 'h264'; Width = 1920; Height = 1080; Fps = 30; Mbps = 4; Expected = $false }
+    ) {
+        $info = [PSCustomObject]@{ Codec = $Codec; Width = $Width; Height = $Height; Fps = $Fps; BitRate = $Mbps * 1000000 }
+        (Get-TranscodeDecision -VideoInfo $info -SkipBelowMbps 4).Transcode | Should -Be $Expected
+    }
+
+    It 'transcodes when the bit rate is unknown or the check is disabled' {
+        (Get-TranscodeDecision -VideoInfo $null -SkipBelowMbps 4).Transcode | Should -BeTrue
+        $noRate = [PSCustomObject]@{ Codec = 'h264'; Width = 1920; Height = 1080; Fps = 30; BitRate = 0 }
+        (Get-TranscodeDecision -VideoInfo $noRate -SkipBelowMbps 4).Transcode | Should -BeTrue
+        $tiny = [PSCustomObject]@{ Codec = 'h264'; Width = 1920; Height = 1080; Fps = 30; BitRate = 100000 }
+        (Get-TranscodeDecision -VideoInfo $tiny -SkipBelowMbps 0).Transcode | Should -BeTrue
+    }
+
+    It 'assumes 30 fps when the frame rate is missing' {
+        $info = [PSCustomObject]@{ Codec = 'h264'; Width = 1920; Height = 1080; Fps = 0; BitRate = 6000000 }
+        [math]::Round((Get-TranscodeDecision -VideoInfo $info -SkipBelowMbps 4).EquivalentMbps, 1) | Should -Be 6
+    }
+}
+
 Describe 'Get-MediaFile' {
     BeforeAll {
         $root = Join-Path $TestDrive 'scan'
@@ -218,6 +291,8 @@ Describe 'Invoke-GPhotosBackup' {
         Mock Write-Warning { }
         Mock Test-CommandAvailable { $true }
         Mock Get-RcloneRemoteList { @('gphotos:') }
+        # Default: bit rate unknown, so videos are transcoded (never call the real ffprobe).
+        Mock Get-VideoInfo { $null }
         Mock Invoke-ExternalTool -ParameterFilter { $FilePath -eq 'ffmpeg' } {
             [System.IO.File]::WriteAllBytes($ArgumentList[-1], (New-Object -TypeName byte[] -ArgumentList $script:transcodedSize))
             0
@@ -263,6 +338,37 @@ Describe 'Invoke-GPhotosBackup' {
         $result = Invoke-GPhotosBackup @backupArgs
         $result.Pending | Should -Be 1
         $result.Changed | Should -Be 1
+    }
+
+    It 'uploads an already compact video without calling ffmpeg' {
+        Mock Get-VideoInfo { [PSCustomObject]@{ Codec = 'hevc'; Width = 3840; Height = 2160; Fps = 30; BitRate = 22000000 } }
+        $result = Invoke-GPhotosBackup @backupArgs
+        $result.ExitCode | Should -Be 0
+        $result.NotTranscoded | Should -Be 1
+        Should -Invoke Invoke-ExternalTool -ParameterFilter { $FilePath -eq 'ffmpeg' } -Times 0 -Exactly
+        $script:uploads | Should -Contain ('{0} -> gphotos:upload/b.mp4' -f $video.FullName)
+        (Read-BackupHistory -Path $historyPath).ContainsKey('2024\b.mp4') | Should -BeTrue
+    }
+
+    It 'still transcodes a high bit rate video' {
+        Mock Get-VideoInfo { [PSCustomObject]@{ Codec = 'h264'; Width = 1920; Height = 1080; Fps = 30; BitRate = 17000000 } }
+        $result = Invoke-GPhotosBackup @backupArgs
+        $result.NotTranscoded | Should -Be 0
+        Should -Invoke Invoke-ExternalTool -ParameterFilter { $FilePath -eq 'ffmpeg' } -Times 1 -Exactly
+    }
+
+    It 'does not probe videos with -SkipTranscodeBelowMbps 0' {
+        $null = Invoke-GPhotosBackup @backupArgs -SkipTranscodeBelowMbps 0
+        Should -Invoke Get-VideoInfo -Times 0 -Exactly
+        Should -Invoke Invoke-ExternalTool -ParameterFilter { $FilePath -eq 'ffmpeg' } -Times 1 -Exactly
+    }
+
+    It 'transcodes every video when ffprobe is missing' {
+        Mock Test-CommandAvailable -ParameterFilter { $Name -eq 'ffprobe' } { $false }
+        $result = Invoke-GPhotosBackup @backupArgs
+        $result.ExitCode | Should -Be 0
+        Should -Invoke Get-VideoInfo -Times 0 -Exactly
+        Should -Invoke Invoke-ExternalTool -ParameterFilter { $FilePath -eq 'ffmpeg' } -Times 1 -Exactly
     }
 
     It 'never touches the real Pictures history when HistoryFile is given' {

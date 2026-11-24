@@ -52,7 +52,7 @@ Google の代替手段は [photos.google.com](https://photos.google.com) の「�
 | --- | --- |
 | **差分アップロード** | JSON 履歴（`相対パス -> サイズ + 更新日時`）で、どのファイルが Google フォトにあるかを判断します。新規・編集済みのファイルだけをアップロードし、それ以外は数秒でスキップします。 |
 | **再開可能** | 各ファイルはアップロード直後に記録されます。PC がスリープしても、回線が切れても、Ctrl+C を押しても、次回は同じファイルから続けます。 |
-| **スマートな動画圧縮** | ffmpeg で H.265/HEVC に変換します（既定は `-crf 24 -preset veryfast`、変更可能）。撮影日時と位置情報は保持され、iPhone の Apple `com.apple.quicktime.*` タグも残ります。H.265 版が小さくならない場合は元のファイルをアップロードします。 |
+| **スマートな動画圧縮** | ffmpeg で H.265/HEVC に変換します（既定は `-crf 24 -preset veryfast`、変更可能）。撮影日時と位置情報は保持され、iPhone の Apple `com.apple.quicktime.*` タグも残ります。H.265 版が小さくならない場合は元のファイルをアップロードします。すでに十分小さい動画（最近の iPhone の HEVC など）は ffprobe で判定し、再エンコードに時間をかけずにそのままアップロードします。 |
 | **アルバム（任意）** | `-AlbumPerFolder` を付けると、サブフォルダごとにその名前のアルバムへ入れます。 |
 | **安全** | アップロードのみ（`rclone copyto`）。シンボリックリンクやジャンクションはたどりません。`-WhatIf` で何もアップロードせずに確認できます。履歴ファイルが壊れている場合は、ライブラリ全体を再アップロードせずに停止します。 |
 | **自動化しやすい** | 終了コード: `0` 成功、`1` エラー（停止）、`2` 完了したが一部の動画を変換できなかった。 |
@@ -169,9 +169,10 @@ Get-Help .\gphotos-backup.ps1 -Detailed
 | `-Crf` | `24` | H.265 の画質（0〜51）。小さいほど高画質でファイルが大きくなります。22〜28 が目安です。 |
 | `-Preset` | `veryfast` | x265 の速度。`medium` や `slow` はファイルが小さくなりますが時間がかかります。 |
 | `-NoTranscode` | オフ | ffmpeg を使いません。 |
+| `-SkipTranscodeBelowMbps` | `4` | 1080p・30 fps 換算のビットレートがこの値以下なら、動画をそのままアップロードします（HEVC、AV1、VP9 は 2 倍の値）。`0` ですべての動画を変換します。 |
 | `-PhotoExtensions` / `-VideoExtensions` | 上記参照 | アップロードするファイルの種類。 |
 | `-ExcludeFolder` | `_Upload_Staging` | どの階層でもスキップするフォルダ名。 |
-| `-RclonePath` / `-FfmpegPath` | `rclone` / `ffmpeg` | `PATH` にない場合の実行ファイル。 |
+| `-RclonePath` / `-FfmpegPath` / `-FfprobePath` | `rclone` / `ffmpeg` / ffmpeg と同じ場所 | `PATH` にない場合の実行ファイル。 |
 | `-WhatIf` / `-Confirm` | | プレビュー、またはファイルごとに確認。 |
 
 rclone のオプションは環境変数でも指定できます。たとえば `$env:RCLONE_BWLIMIT = '4M'` でアップロード帯域を制限できます。
@@ -254,7 +255,6 @@ AI コーディングエージェントは、まず [AGENTS.md](../AGENTS.md) �
 
 - スケジュールタスクを 1 コマンドで作成する補助スクリプト `Register-BackupTask.ps1`
 - 変換を速くするためのハードウェアエンコード（NVENC、Quick Sync、AMF）のオプション
-- すでに HEVC の動画や小さい動画を、ビットレートで判断して再エンコードしない
 - 再エンコード時に HDR メタデータを保持する
 - ログファイルと実行ごとの JSON レポート
 - PowerShell Gallery と `winget` での公開

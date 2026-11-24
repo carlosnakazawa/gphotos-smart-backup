@@ -52,7 +52,7 @@ Google 给出的替代方案是 [photos.google.com](https://photos.google.com) �
 | --- | --- |
 | **增量上传** | 用 JSON 历史记录（`相对路径 -> 大小 + 修改时间`）判断哪些文件已在 Google 相册中。只上传新增和编辑过的文件，其余文件几秒内即可跳过。 |
 | **断点续传** | 每个文件上传后立即记录。即使电脑休眠、网络中断或按下 Ctrl+C，下次运行也会从同一个文件继续。 |
-| **智能视频压缩** | 使用 ffmpeg 转为 H.265/HEVC（默认 `-crf 24 -preset veryfast`，可调）。保留拍摄日期和位置信息，包括 iPhone 的 Apple `com.apple.quicktime.*` 标签。如果 H.265 版本没有变小，就上传原文件。 |
+| **智能视频压缩** | 使用 ffmpeg 转为 H.265/HEVC（默认 `-crf 24 -preset veryfast`，可调）。保留拍摄日期和位置信息，包括 iPhone 的 Apple `com.apple.quicktime.*` 标签。如果 H.265 版本没有变小，就上传原文件。已经足够精简的视频（例如新款 iPhone 拍摄的 HEVC）会通过 ffprobe 识别并直接上传，不浪费时间重新编码。 |
 | **相册（可选）** | 使用 `-AlbumPerFolder` 时，每个子文件夹中的文件会放入以该文件夹命名的相册。 |
 | **安全** | 只上传（`rclone copyto`）。不跟随符号链接或目录联接。`-WhatIf` 可在不上传的情况下预览全部操作。历史文件损坏时会停止运行，而不是重新上传整个图库。 |
 | **便于自动化** | 退出码：`0` 成功，`1` 出错（已停止），`2` 已完成但部分视频无法转码。 |
@@ -169,9 +169,10 @@ Get-Help .\gphotos-backup.ps1 -Detailed
 | `-Crf` | `24` | H.265 画质，取值 0 到 51。数值越小画质越好、文件越大。22 到 28 比较合适。 |
 | `-Preset` | `veryfast` | x265 速度。`medium` 和 `slow` 文件更小，但耗时更长。 |
 | `-NoTranscode` | 关闭 | 不使用 ffmpeg。 |
+| `-SkipTranscodeBelowMbps` | `4` | 视频码率折算为 1080p 30 fps 后不高于此值时，直接上传原视频（HEVC、AV1、VP9 为两倍）。设为 `0` 则转码所有视频。 |
 | `-PhotoExtensions` / `-VideoExtensions` | 见上文 | 要上传的文件类型。 |
 | `-ExcludeFolder` | `_Upload_Staging` | 在任意层级跳过的文件夹名称。 |
-| `-RclonePath` / `-FfmpegPath` | `rclone` / `ffmpeg` | 不在 `PATH` 中时的可执行文件路径。 |
+| `-RclonePath` / `-FfmpegPath` / `-FfprobePath` | `rclone` / `ffmpeg` / 与 ffmpeg 同目录 | 不在 `PATH` 中时的可执行文件路径。 |
 | `-WhatIf` / `-Confirm` | | 预览，或逐个文件确认。 |
 
 任何 rclone 选项都可以通过环境变量设置，例如用 `$env:RCLONE_BWLIMIT = '4M'` 限制上传带宽。
@@ -254,7 +255,6 @@ AI 编程代理：请先阅读 [AGENTS.md](../AGENTS.md)。
 
 - 辅助脚本 `Register-BackupTask.ps1`，一条命令创建计划任务。
 - 可选的硬件编码（NVENC、Quick Sync、AMF），加快转码。
-- 根据码率，跳过已是 HEVC 或体积较小的视频。
 - 重新编码时保留 HDR 元数据。
 - 日志文件和每次运行的 JSON 报告。
 - 发布到 PowerShell Gallery 和 `winget`。

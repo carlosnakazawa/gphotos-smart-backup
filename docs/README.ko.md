@@ -52,7 +52,7 @@ Google의 대안은 [photos.google.com](https://photos.google.com)의 "폴더 �
 | --- | --- |
 | **증분 업로드** | JSON 기록(`상대 경로 -> 크기 + 수정 시각`)으로 어떤 파일이 이미 Google 포토에 있는지 판단합니다. 새 파일과 편집된 파일만 업로드하고 나머지는 몇 초 만에 건너뜁니다. |
 | **이어서 진행** | 각 파일은 업로드 직후 기록됩니다. PC가 절전 모드에 들어가거나, 네트워크가 끊기거나, Ctrl+C를 눌러도 다음 실행에서 같은 파일부터 계속합니다. |
-| **스마트 동영상 압축** | ffmpeg로 H.265/HEVC 변환(기본값 `-crf 24 -preset veryfast`, 조정 가능). 촬영 날짜와 위치 정보는 유지되며, iPhone의 Apple `com.apple.quicktime.*` 태그도 보존됩니다. H.265 버전이 더 작지 않으면 원본을 업로드합니다. |
+| **스마트 동영상 압축** | ffmpeg로 H.265/HEVC 변환(기본값 `-crf 24 -preset veryfast`, 조정 가능). 촬영 날짜와 위치 정보는 유지되며, iPhone의 Apple `com.apple.quicktime.*` 태그도 보존됩니다. H.265 버전이 더 작지 않으면 원본을 업로드합니다. 이미 충분히 작은 동영상(예: 최신 iPhone의 HEVC)은 ffprobe로 판별해 다시 인코딩하지 않고 그대로 업로드합니다. |
 | **앨범(선택 사항)** | `-AlbumPerFolder`를 사용하면 각 하위 폴더의 파일을 그 이름의 앨범에 넣습니다. |
 | **안전함** | 업로드만 합니다(`rclone copyto`). 심볼릭 링크나 정션은 따라가지 않습니다. `-WhatIf`로 아무것도 업로드하지 않고 미리 볼 수 있습니다. 기록 파일이 손상되면 라이브러리 전체를 다시 올리는 대신 실행을 멈춥니다. |
 | **자동화 친화적** | 종료 코드: `0` 성공, `1` 오류(중단), `2` 완료했지만 일부 동영상을 변환하지 못함. |
@@ -169,9 +169,10 @@ Get-Help .\gphotos-backup.ps1 -Detailed
 | `-Crf` | `24` | H.265 화질(0~51). 낮을수록 화질이 좋고 파일이 커집니다. 22~28이 적당합니다. |
 | `-Preset` | `veryfast` | x265 속도. `medium`, `slow`는 파일이 작아지지만 시간이 더 걸립니다. |
 | `-NoTranscode` | 끔 | ffmpeg를 사용하지 않습니다. |
+| `-SkipTranscodeBelowMbps` | `4` | 1080p 30fps 기준으로 환산한 비트레이트가 이 값 이하이면 동영상을 그대로 업로드합니다(HEVC, AV1, VP9는 두 배). `0`이면 모든 동영상을 변환합니다. |
 | `-PhotoExtensions` / `-VideoExtensions` | 위 참고 | 업로드할 파일 형식. |
 | `-ExcludeFolder` | `_Upload_Staging` | 어느 깊이에서든 건너뛸 폴더 이름. |
-| `-RclonePath` / `-FfmpegPath` | `rclone` / `ffmpeg` | `PATH`에 없을 때의 실행 파일. |
+| `-RclonePath` / `-FfmpegPath` / `-FfprobePath` | `rclone` / `ffmpeg` / ffmpeg와 같은 폴더 | `PATH`에 없을 때의 실행 파일. |
 | `-WhatIf` / `-Confirm` | | 미리 보기, 또는 파일마다 확인. |
 
 rclone 옵션은 환경 변수로도 지정할 수 있습니다. 예를 들어 `$env:RCLONE_BWLIMIT = '4M'`로 업로드 대역폭을 제한할 수 있습니다.
@@ -254,7 +255,6 @@ AI 코딩 에이전트는 먼저 [AGENTS.md](../AGENTS.md)를 읽으세요.
 
 - 예약 작업을 명령 하나로 만드는 보조 스크립트 `Register-BackupTask.ps1`
 - 더 빠른 변환을 위한 하드웨어 인코딩(NVENC, Quick Sync, AMF) 옵션
-- 이미 HEVC이거나 작은 동영상은 비트레이트를 보고 다시 인코딩하지 않기
 - 다시 인코딩할 때 HDR 메타데이터 유지
 - 로그 파일과 실행별 JSON 보고서
 - PowerShell Gallery와 `winget` 배포
